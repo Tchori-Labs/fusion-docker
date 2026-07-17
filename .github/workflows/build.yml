@@ -100,15 +100,16 @@ jobs:
           docker exec smoke-clean fn --version   # exit!=0 = broken CLI (dep skew)
           docker rm -f smoke-clean
 
-      - name: Build agents image (local)
+      - name: Push clean by digest
+        id: push_clean
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: agents/Dockerfile
-          build-args: BASE_IMAGE=local/fusion:clean
+          context: upstream
           platforms: ${{ matrix.platform }}
-          load: true
-          tags: local/fusion:agents
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Build agents image (local)
+        run: docker build -f agents/Dockerfile --build-arg BASE_IMAGE=local/fusion:clean -t local/fusion:agents .
 
       - name: Smoke test agents
         env:
@@ -134,21 +135,13 @@ jobs:
           docker exec smoke-agents which bwrap
           docker rm -f smoke-agents
 
-      - name: Push clean by digest
-        id: push_clean
-        uses: docker/build-push-action@v6
-        with:
-          context: upstream
-          platforms: ${{ matrix.platform }}
-          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
-
       - name: Push agents by digest
         id: push_agents
         uses: docker/build-push-action@v6
         with:
           context: .
           file: agents/Dockerfile
-          build-args: BASE_IMAGE=local/fusion:clean
+          build-args: BASE_IMAGE=${{ env.IMAGE }}@${{ steps.push_clean.outputs.digest }}
           platforms: ${{ matrix.platform }}
           outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
 
