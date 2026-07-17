@@ -1,0 +1,221 @@
+name: build
+
+on:
+  workflow_dispatch:
+    inputs:
+      fusion_ref:
+        description: "Runfusion/Fusion tag to build (e.g. v0.60.0)"
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+  issues: write
+
+env:
+  IMAGE: ghcr.io/tchori-labs/fusion
+
+jobs:
+  # One native runner per arch - no QEMU. Each builds clean + agents locally,
+  # smoke-tests both, then pushes untagged images by digest; the merge job
+  # stitches them into the multi-arch version tags.
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Runfusion/Fusion
+          ref: ${{ inputs.fusion_ref }}
+          path: upstream
+
+      - name: Compute version + npm --before timestamp
+        id: meta
+        shell: python3 {0}
+        env:
+          FUSION_REF: ${{ inputs.fusion_ref }}
+        run: |
+          import json, os, urllib.request
+          from datetime import datetime, timedelta
+          ver = os.environ["FUSION_REF"].lstrip("v")
+          meta = json.load(urllib.request.urlopen("https://registry.npmjs.org/runfusion.ai"))
+          published = datetime.fromisoformat(meta["time"][ver].replace("Z", "+00:00"))
+          before = (published + timedelta(seconds=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"version={ver}\nnpm_before={before}\n")
+
+      - name: Apply patches
+        working-directory: upstream
+        env:
+          FUSION_VERSION: ${{ steps.meta.outputs.version }}
+          NPM_BEFORE: ${{ steps.meta.outputs.npm_before }}
+        run: |
+          python3 ../patches/sync_workspace_copies.py
+          python3 ../patches/relocate_app.py
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build clean image (local)
+        uses: docker/build-push-action@v6
+        with:
+          context: upstream
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: local/fusion:clean
+
+      - name: Smoke test clean
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker run -d --name smoke-clean -e FUSION_SKIP_ONBOARDING=1 \
+            -p 4040:4040 local/fusion:clean
+          V=""
+          for i in $(seq 1 45); do
+            V=$(curl -sf localhost:4040/api/health \
+              | python3 -c 'import sys,json;print(json.load(sys.stdin)["version"])' \
+              2>/dev/null) && break
+            sleep 2
+          done
+          if [ "$V" != "$VERSION" ]; then
+            echo "health version '$V' != expected '$VERSION'"; docker logs smoke-clean; exit 1
+          fi
+          docker exec smoke-clean fn --version   # exit!=0 = broken CLI (dep skew)
+          docker rm -f smoke-clean
+
+      - name: Build agents image (local)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: agents/Dockerfile
+          build-args: BASE_IMAGE=local/fusion:clean
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: local/fusion:agents
+
+      - name: Smoke test agents
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker run -d --name smoke-agents -e FUSION_SKIP_ONBOARDING=1 \
+            -p 4041:4040 local/fusion:agents
+          V=""
+          for i in $(seq 1 45); do
+            V=$(curl -sf localhost:4041/api/health \
+              | python3 -c 'import sys,json;print(json.load(sys.stdin)["version"])' \
+              2>/dev/null) && break
+            sleep 2
+          done
+          if [ "$V" != "$VERSION" ]; then
+            echo "health version '$V' != expected '$VERSION'"; docker logs smoke-agents; exit 1
+          fi
+          docker exec smoke-agents fn --version
+          docker exec smoke-agents gh --version
+          docker exec smoke-agents claude --version
+          docker exec smoke-agents codex --version
+          docker exec smoke-agents which bwrap
+          docker rm -f smoke-agents
+
+      - name: Push clean by digest
+        id: push_clean
+        uses: docker/build-push-action@v6
+        with:
+          context: upstream
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Push agents by digest
+        id: push_agents
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: agents/Dockerfile
+          build-args: BASE_IMAGE=local/fusion:clean
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Export digests
+        run: |
+          mkdir -p /tmp/digests/clean /tmp/digests/agents
+          touch "/tmp/digests/clean/$(echo '${{ steps.push_clean.outputs.digest }}' | cut -d: -f2)"
+          touch "/tmp/digests/agents/$(echo '${{ steps.push_agents.outputs.digest }}' | cut -d: -f2)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          retention-days: 1
+          if-no-files-found: error
+
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive version
+        id: ver
+        env:
+          REF: ${{ inputs.fusion_ref }}
+        run: echo "version=${REF#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create multi-arch manifests
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            -t "$IMAGE:${{ steps.ver.outputs.version }}" -t "$IMAGE:latest" \
+            $(printf "$IMAGE@sha256:%s " clean/*)
+          docker buildx imagetools create \
+            -t "$IMAGE:${{ steps.ver.outputs.version }}-agents" -t "$IMAGE:latest-agents" \
+            $(printf "$IMAGE@sha256:%s " agents/*)
+          docker buildx imagetools inspect "$IMAGE:${{ steps.ver.outputs.version }}"
+          docker buildx imagetools inspect "$IMAGE:${{ steps.ver.outputs.version }}-agents"
+
+  report-failure:
+    needs: [build, merge]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: File issue (deduped per tag)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF: ${{ inputs.fusion_ref }}
+        run: |
+          TITLE="build failed for $REF"
+          if [ -z "$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number')" ]; then
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITLE" \
+              --body "Automated build for upstream tag \`$REF\` failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          Likely causes: upstream Dockerfile changed shape (patch assertions), smoke-test failure, or transient GHCR blob race (rerun failed jobs)."
+          fi
