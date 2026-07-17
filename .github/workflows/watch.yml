@@ -1,0 +1,38 @@
+name: watch
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  packages: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ghcr.io/tchori-labs/fusion
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Detect new upstream release
+        id: detect
+        run: |
+          set -euo pipefail
+          TAG=$(gh api repos/Runfusion/Fusion/releases/latest --jq .tag_name)
+          VER=${TAG#v}
+          echo "$TAG (=$VER)"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          if docker manifest inspect "$IMAGE:$VER-agents" > /dev/null 2>&1; then
+            echo "already published - nothing to do"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new release - dispatching build"
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Dispatch build
+        if: steps.detect.outputs.build == 'true'
+        run: gh workflow run build.yml --repo "$GITHUB_REPOSITORY" -f fusion_ref="${{ steps.detect.outputs.tag }}"
