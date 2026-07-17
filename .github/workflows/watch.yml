@@ -23,8 +23,8 @@ jobs:
           TAG=$(gh api repos/Runfusion/Fusion/releases/latest --jq .tag_name)
           VER=${TAG#v}
           echo "$TAG (=$VER)"
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          if docker manifest inspect "$IMAGE:$VER-agents" > /dev/null 2>&1; then
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          if docker buildx imagetools inspect "$IMAGE:$VER-agents" > /dev/null 2>&1; then
             echo "already published - nothing to do"
             echo "build=false" >> "$GITHUB_OUTPUT"
           else
