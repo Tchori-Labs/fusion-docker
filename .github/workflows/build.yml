@@ -187,10 +187,10 @@ jobs:
         run: |
           docker buildx imagetools create \
             -t "$IMAGE:${{ steps.ver.outputs.version }}" -t "$IMAGE:latest" \
-            $(printf "$IMAGE@sha256:%s " clean/*)
+            $(cd clean && printf "$IMAGE@sha256:%s " *)
           docker buildx imagetools create \
             -t "$IMAGE:${{ steps.ver.outputs.version }}-agents" -t "$IMAGE:latest-agents" \
-            $(printf "$IMAGE@sha256:%s " agents/*)
+            $(cd agents && printf "$IMAGE@sha256:%s " *)
           docker buildx imagetools inspect "$IMAGE:${{ steps.ver.outputs.version }}"
           docker buildx imagetools inspect "$IMAGE:${{ steps.ver.outputs.version }}-agents"
 
