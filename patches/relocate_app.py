@@ -4,7 +4,13 @@
 Upstream installs the app AT /project (runtime WORKDIR /project, ENTRYPOINT
 relative to it). A persistent volume mounted at /project seeds-then-shadows
 the app, silently defeating image updates. Move the app to /app; /project
-becomes an empty node-owned HOME/data mount. Also bake the fn/fusion CLI:
+becomes an empty node-owned HOME/data mount. The RUNTIME cwd must stay on
+/project though: upstream roots cwd-relative state (the unregistered-project
+fallback writes .fusion/tasks + .fusion/agents under process.cwd(), and the
+SQLite->PG migration_key embeds the launch dir) — with cwd=/app that state
+lands in the ephemeral app tree and dies on every image update. So the
+ENTRYPOINT becomes absolute (/app/...) and WORKDIR flips back to /project
+for the final image. Also bake the fn/fusion CLI:
 USER node can't write /usr/local at runtime (the dashboard self-installer
 always EACCES-fails in a container), and runfusion.ai's loose ^ deps must be
 resolved as of the release publish moment (--before) or newer transitive
@@ -29,7 +35,21 @@ try:
         "RUN mkdir -p /project && chown node:node /app /project\n",
     )
     assert "USER node\n" in tail, "runtime USER node not found"
-    tail = tail.replace("USER node\n", "ENV HOME=/project\nUSER node\n", 1)
+    tail = tail.replace(
+        "USER node\n",
+        "ENV HOME=/project\n"
+        "USER node\n"
+        "# Runtime cwd on the data volume: upstream roots cwd-relative state\n"
+        "# (.fusion/tasks, .fusion/agents, migration keys) at the launch dir.\n"
+        "WORKDIR /project\n",
+        1,
+    )
+
+    entrypoint = 'ENTRYPOINT ["node", "packages/cli/dist/bin.js"]'
+    assert entrypoint in tail, "relative ENTRYPOINT not found"
+    tail = tail.replace(
+        entrypoint, 'ENTRYPOINT ["node", "/app/packages/cli/dist/bin.js"]', 1
+    )
 
     cli = (
         "# fusion-docker: fn CLI pinned to the server version; dep tree "
