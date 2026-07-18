@@ -161,6 +161,11 @@ jobs:
   merge:
     needs: build
     runs-on: ubuntu-latest
+    # Serialize manifest writes across runs: two overlapping dispatches must
+    # not interleave their :latest updates (#4).
+    concurrency:
+      group: fusion-manifest-merge
+      cancel-in-progress: false
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -182,14 +187,44 @@ jobs:
           REF: ${{ inputs.fusion_ref }}
         run: echo "version=${REF#v}" >> "$GITHUB_OUTPUT"
 
+      # Never move :latest/:latest-agents backwards (#2): a manual backfill
+      # dispatch of an old tag must only create the immutable X.Y.Z tags.
+      # Downgrading :latest past the 0.70.0 PostgreSQL cutover would make any
+      # deployment tracking it boot a pre-PG image against stale SQLite data.
+      - name: Guard latest tags
+        id: guard
+        env:
+          VER: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          TOKEN=$(curl -sf "https://ghcr.io/token?scope=repository:tchori-labs/fusion:pull" \
+            | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+          HIGHEST=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+              "https://ghcr.io/v2/tchori-labs/fusion/tags/list?n=1000" \
+            | python3 -c 'import sys,json,re;print("\n".join(t for t in json.load(sys.stdin).get("tags",[]) if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+",t)))' \
+            | sort -V | tail -1 || true)
+          if [ -z "$HIGHEST" ] || [ "$(printf '%s\n%s\n' "$HIGHEST" "$VER" | sort -V | tail -1)" = "$VER" ]; then
+            echo "move_latest=true" >> "$GITHUB_OUTPUT"
+            echo "dispatched $VER >= highest published ${HIGHEST:-<none>} - latest tags will move"
+          else
+            echo "move_latest=false" >> "$GITHUB_OUTPUT"
+            echo "dispatched $VER < highest published $HIGHEST - backfill build, latest tags stay put"
+          fi
+
       - name: Create multi-arch manifests
         working-directory: /tmp/digests
+        env:
+          MOVE_LATEST: ${{ steps.guard.outputs.move_latest }}
         run: |
+          LATEST_CLEAN=""; LATEST_AGENTS=""
+          if [ "$MOVE_LATEST" = "true" ]; then
+            LATEST_CLEAN="-t $IMAGE:latest"; LATEST_AGENTS="-t $IMAGE:latest-agents"
+          fi
           docker buildx imagetools create \
-            -t "$IMAGE:${{ steps.ver.outputs.version }}" -t "$IMAGE:latest" \
+            -t "$IMAGE:${{ steps.ver.outputs.version }}" $LATEST_CLEAN \
             $(cd clean && printf "$IMAGE@sha256:%s " *)
           docker buildx imagetools create \
-            -t "$IMAGE:${{ steps.ver.outputs.version }}-agents" -t "$IMAGE:latest-agents" \
+            -t "$IMAGE:${{ steps.ver.outputs.version }}-agents" $LATEST_AGENTS \
             $(cd agents && printf "$IMAGE@sha256:%s " *)
           docker buildx imagetools inspect "$IMAGE:${{ steps.ver.outputs.version }}"
           docker buildx imagetools inspect "$IMAGE:${{ steps.ver.outputs.version }}-agents"
