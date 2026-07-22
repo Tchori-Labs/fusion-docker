@@ -10,25 +10,51 @@ permissions:
   packages: read
 
 jobs:
+  # One leg per release track. stable follows GitHub's releases/latest (which is
+  # newest non-prerelease by definition); beta follows the newest vX.Y.Z-beta.N
+  # prerelease. Both dedupe against GHCR and dispatch the same build.yml - the
+  # build infers the channel from the ref (#beta), so nothing else differs here.
   check:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: [stable, beta]
     env:
       IMAGE: ghcr.io/tchori-labs/fusion
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Detect new upstream release
         id: detect
+        env:
+          CHANNEL: ${{ matrix.channel }}
         run: |
           set -euo pipefail
-          TAG=$(gh api repos/Runfusion/Fusion/releases/latest --jq .tag_name)
+          if [ "$CHANNEL" = "stable" ]; then
+            TAG=$(gh api repos/Runfusion/Fusion/releases/latest --jq .tag_name)
+          else
+            # Newest vX.Y.Z-beta.N prerelease chosen by SEMVER, not list/date order:
+            # a hotfix beta on an older base (0.73.1-beta.0 published after
+            # 0.74.0-beta.0) must not win by recency. Map '-' -> '~' so `sort -V`
+            # ranks prereleases below their finals, then map back. Ignore drafts
+            # and non-beta prereleases (e.g. -rc.N) - only -beta.N feeds :beta.
+            TAG=$(gh api 'repos/Runfusion/Fusion/releases?per_page=100' \
+                --jq '.[] | select(.prerelease and (.draft | not) and (.tag_name | test("-beta\\.[0-9]+$"))) | .tag_name' \
+              | sed 's/-/~/' | sort -V | tail -1 | sed 's/~/-/')
+          fi
+          if [ -z "${TAG:-}" ]; then
+            echo "no $CHANNEL release found - nothing to do"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           VER=${TAG#v}
-          echo "$TAG (=$VER)"
+          echo "$CHANNEL newest: $TAG (=$VER)"
           echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           if docker buildx imagetools inspect "$IMAGE:$VER-agents" > /dev/null 2>&1; then
             echo "already published - nothing to do"
             echo "build=false" >> "$GITHUB_OUTPUT"
           else
-            echo "new release - dispatching build"
+            echo "new $CHANNEL release - dispatching build"
             echo "build=true" >> "$GITHUB_OUTPUT"
             echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           fi
