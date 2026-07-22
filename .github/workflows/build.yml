@@ -212,7 +212,7 @@ jobs:
           VER: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
-          TOKEN=$(curl -sf "https://ghcr.io/token?scope=repository:tchori-labs/fusion:pull" \
+          TOKEN=$(curl -sf "https://ghcr.io/token?service=ghcr.io&scope=repository:tchori-labs/fusion:pull" \
             | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
           TAGS=$(curl -sf -H "Authorization: Bearer $TOKEN" \
             "https://ghcr.io/v2/tchori-labs/fusion/tags/list?n=1000")
@@ -247,6 +247,7 @@ jobs:
         env:
           MOVE_LATEST: ${{ steps.guard.outputs.move_latest }}
           MOVE_BETA: ${{ steps.guard.outputs.move_beta }}
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
           CLEAN_MOVING=""; AGENTS_MOVING=""
@@ -259,13 +260,13 @@ jobs:
             AGENTS_MOVING="$AGENTS_MOVING -t $IMAGE:beta-agents"
           fi
           docker buildx imagetools create \
-            -t "$IMAGE:${{ steps.ver.outputs.version }}" $CLEAN_MOVING \
+            -t "$IMAGE:$VERSION" $CLEAN_MOVING \
             $(cd clean && printf "$IMAGE@sha256:%s " *)
           docker buildx imagetools create \
-            -t "$IMAGE:${{ steps.ver.outputs.version }}-agents" $AGENTS_MOVING \
+            -t "$IMAGE:$VERSION-agents" $AGENTS_MOVING \
             $(cd agents && printf "$IMAGE@sha256:%s " *)
-          docker buildx imagetools inspect "$IMAGE:${{ steps.ver.outputs.version }}"
-          docker buildx imagetools inspect "$IMAGE:${{ steps.ver.outputs.version }}-agents"
+          docker buildx imagetools inspect "$IMAGE:$VERSION"
+          docker buildx imagetools inspect "$IMAGE:$VERSION-agents"
 
   report-failure:
     needs: [build, merge]
