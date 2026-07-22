@@ -162,7 +162,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     # Serialize manifest writes across runs: two overlapping dispatches must
-    # not interleave their :latest updates (#4).
+    # not interleave their :latest / :beta updates (#4). stable and beta merges
+    # share ONE group on purpose - a stable release can also advance :beta (see
+    # the guard's beta >= stable invariant), so the two tracks are not
+    # independent and must never write concurrently.
     concurrency:
       group: fusion-manifest-merge
       cancel-in-progress: false
@@ -187,47 +190,83 @@ jobs:
           REF: ${{ inputs.fusion_ref }}
         run: echo "version=${REF#v}" >> "$GITHUB_OUTPUT"
 
-      # Never move :latest/:latest-agents backwards (#2): a manual backfill
-      # dispatch of an old tag must only create the immutable X.Y.Z tags.
-      # Downgrading :latest past the 0.70.0 PostgreSQL cutover would make any
-      # deployment tracking it boot a pre-PG image against stale SQLite data.
-      - name: Guard latest tags
+      # Decide which MOVING tags this build advances. Two channels:
+      #   :latest / :latest-agents  - newest STABLE (pure X.Y.Z) only.
+      #   :beta   / :beta-agents    - newest of {stable, beta}, so beta >= stable
+      #                               always (a :beta consumer never runs code
+      #                               older than :latest).
+      # Immutable X.Y.Z[-beta.N] tags are always created (below), regardless.
+      #
+      # Never move a pointer backwards (#2): a manual backfill of an old tag must
+      # only create its immutable tag. Downgrading :latest past the 0.70.0
+      # PostgreSQL cutover would make a deployment tracking it boot a pre-PG
+      # image against stale SQLite data.
+      #
+      # `sort -V` is NOT semver (it ranks 0.73.0-beta.2 ABOVE the final 0.73.0),
+      # so ordering is done in Python with an explicit key where a final ranks
+      # above its own prereleases. Empty tag sets (e.g. the very first beta ever)
+      # resolve to "move", so a fresh channel pointer gets created.
+      - name: Guard moving tags
         id: guard
         env:
           VER: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
-          TOKEN=$(curl -sf "https://ghcr.io/token?scope=repository:tchori-labs/fusion:pull" \
+          TOKEN=$(curl -sf "https://ghcr.io/token?service=ghcr.io&scope=repository:tchori-labs/fusion:pull" \
             | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
-          HIGHEST=$(curl -sf -H "Authorization: Bearer $TOKEN" \
-              "https://ghcr.io/v2/tchori-labs/fusion/tags/list?n=1000" \
-            | python3 -c 'import sys,json,re;print("\n".join(t for t in json.load(sys.stdin).get("tags",[]) if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+",t)))' \
-            | sort -V | tail -1 || true)
-          if [ -z "$HIGHEST" ] || [ "$(printf '%s\n%s\n' "$HIGHEST" "$VER" | sort -V | tail -1)" = "$VER" ]; then
-            echo "move_latest=true" >> "$GITHUB_OUTPUT"
-            echo "dispatched $VER >= highest published ${HIGHEST:-<none>} - latest tags will move"
-          else
-            echo "move_latest=false" >> "$GITHUB_OUTPUT"
-            echo "dispatched $VER < highest published $HIGHEST - backfill build, latest tags stay put"
-          fi
+          TAGS=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+            "https://ghcr.io/v2/tchori-labs/fusion/tags/list?n=1000")
+          export TAGS VER
+          python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          import json, os, re
+          def key(t):
+              m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?", t)
+              if not m:
+                  return None
+              x, y, z, b = m.groups()
+              # final -> (..., 1) outranks its betas -> (..., 0, N)
+              return (int(x), int(y), int(z)) + ((1,) if b is None else (0, int(b)))
+          ver = os.environ["VER"]
+          kver = key(ver)
+          assert kver is not None, f"unparseable version {ver!r}"
+          is_beta = "-beta." in ver
+          tags = json.loads(os.environ["TAGS"]).get("tags", [])
+          keys = {t: key(t) for t in tags}
+          stable = [k for t, k in keys.items() if k and "-beta." not in t]
+          allk = [k for k in keys.values() if k]
+          move_latest = (not is_beta) and (not stable or kver >= max(stable))
+          move_beta = (not allk) or (kver >= max(allk))
+          print(f"move_latest={'true' if move_latest else 'false'}")
+          print(f"move_beta={'true' if move_beta else 'false'}")
+          import sys
+          print(f"{ver}: move_latest={move_latest} move_beta={move_beta}", file=sys.stderr)
+          PY
 
       - name: Create multi-arch manifests
         working-directory: /tmp/digests
         env:
           MOVE_LATEST: ${{ steps.guard.outputs.move_latest }}
+          MOVE_BETA: ${{ steps.guard.outputs.move_beta }}
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          LATEST_CLEAN=""; LATEST_AGENTS=""
+          set -euo pipefail
+          CLEAN_MOVING=""; AGENTS_MOVING=""
           if [ "$MOVE_LATEST" = "true" ]; then
-            LATEST_CLEAN="-t $IMAGE:latest"; LATEST_AGENTS="-t $IMAGE:latest-agents"
+            CLEAN_MOVING="$CLEAN_MOVING -t $IMAGE:latest"
+            AGENTS_MOVING="$AGENTS_MOVING -t $IMAGE:latest-agents"
+          fi
+          if [ "$MOVE_BETA" = "true" ]; then
+            CLEAN_MOVING="$CLEAN_MOVING -t $IMAGE:beta"
+            AGENTS_MOVING="$AGENTS_MOVING -t $IMAGE:beta-agents"
           fi
           docker buildx imagetools create \
-            -t "$IMAGE:${{ steps.ver.outputs.version }}" $LATEST_CLEAN \
+            -t "$IMAGE:$VERSION" $CLEAN_MOVING \
             $(cd clean && printf "$IMAGE@sha256:%s " *)
           docker buildx imagetools create \
-            -t "$IMAGE:${{ steps.ver.outputs.version }}-agents" $LATEST_AGENTS \
+            -t "$IMAGE:$VERSION-agents" $AGENTS_MOVING \
             $(cd agents && printf "$IMAGE@sha256:%s " *)
-          docker buildx imagetools inspect "$IMAGE:${{ steps.ver.outputs.version }}"
-          docker buildx imagetools inspect "$IMAGE:${{ steps.ver.outputs.version }}-agents"
+          docker buildx imagetools inspect "$IMAGE:$VERSION"
+          docker buildx imagetools inspect "$IMAGE:$VERSION-agents"
 
   report-failure:
     needs: [build, merge]
