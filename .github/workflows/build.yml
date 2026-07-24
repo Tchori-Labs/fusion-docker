@@ -62,6 +62,7 @@ jobs:
           NPM_BEFORE: ${{ steps.meta.outputs.npm_before }}
         run: |
           python3 ../patches/sync_workspace_copies.py
+          python3 ../patches/skip_electron_download.py
           python3 ../patches/relocate_app.py
 
       - uses: docker/setup-buildx-action@v3
