@@ -10,11 +10,17 @@ actually updateable under a persistent data volume.
 
 | Tag | Contents |
 |-----|----------|
-| `X.Y.Z`, `latest` | Fusion server + `fn` CLI (pinned to the server version) |
-| `X.Y.Z-agents`, `latest-agents` | the above + `gh`, `claude`, `codex`, `bubblewrap` — for boards whose coding agents run inside the container |
+| `X.Y.Z`, `X.Y.Z-beta.N` | Fusion server + `fn` CLI (pinned to the server version) |
+| `X.Y.Z-agents`, `X.Y.Z-beta.N-agents` | the above + `gh`, `claude`, `codex`, `bubblewrap` — for boards whose coding agents run inside the container |
+| `latest`, `latest-agents` | moving pointer to the newest **stable** build of that variant |
+| `beta`, `beta-agents` | moving pointer to the newest of {stable, beta} — never older than `latest` |
 
-`latest*` tags only advance after both variants pass smoke tests on both
-architectures.
+**Pin production to an immutable `X.Y.Z[-beta.N]` tag** (with the `-agents`
+suffix if you need that variant). The moving tags exist to track a channel,
+not to run in production.
+
+Moving tags only advance after both variants pass smoke tests on both
+architectures, and never move backwards.
 
 ## Layout (differs from upstream on purpose)
 
@@ -22,6 +28,10 @@ architectures.
 - `/project` is the container user's `$HOME` and the data directory —
   mount your persistent volume there. Fusion state lands in
   `/project/.fusion`.
+- `postgresql-client` is installed in the clean image (and inherited by
+  `-agents`). Fusion's backup/restore shells out to `pg_dump`/`pg_restore`,
+  which the embedded PostgreSQL package doesn't ship — without them
+  `fn backup` fails. The client major (15) matches the embedded server.
 - Runs as user `node` (uid/gid 1000). The `fn`/`fusion` CLI is preinstalled;
   the dashboard's "install global CLI" self-installer cannot work in a
   container (non-root can't write `/usr/local`) and isn't needed.
