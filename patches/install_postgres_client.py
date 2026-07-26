@@ -21,12 +21,16 @@ import sys
 
 PKG = "postgresql-client"
 
-# The runner-stage package list, with any line-continuation backslash split off
-# so the package can be appended without breaking the RUN chain.
+# The runner-stage package list, with the line-continuation backslash split off
+# so the package can be appended without breaking the RUN chain. The package
+# group only accepts package-name characters and the continuation is required,
+# so a shell-chained line (`... git && rm -rf ...`) does not match at all and
+# falls through to the loud exit below rather than appending the package to
+# whatever command happens to come last on the line.
 APT_RE = re.compile(
     r"^(?P<lead>[^\n]*?apt-get install -y --no-install-recommends[ \t]+)"
-    r"(?P<pkgs>[^\n\\]*?)"
-    r"(?P<cont>[ \t]*\\?)$",
+    r"(?P<pkgs>[A-Za-z0-9][A-Za-z0-9.+:=~_-]*(?:[ \t]+[A-Za-z0-9][A-Za-z0-9.+:=~_-]*)*)"
+    r"(?P<cont>[ \t]*\\)$",
     re.M,
 )
 
@@ -44,8 +48,9 @@ matches = [m for m in APT_RE.finditer(tail) if "git" in m.group("pkgs").split()]
 if len(matches) != 1:
     sys.exit(
         f"install_postgres_client: expected exactly 1 runner-stage 'apt-get "
-        f"install -y --no-install-recommends ... git' line, found "
-        f"{len(matches)} - upstream Dockerfile changed shape, refusing to guess"
+        f"install -y --no-install-recommends ... git \\' line ending in a line "
+        f"continuation, found {len(matches)} - upstream Dockerfile changed "
+        f"shape, refusing to guess"
     )
 
 m = matches[0]

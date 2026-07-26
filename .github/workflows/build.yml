@@ -203,10 +203,10 @@ jobs:
       #   :beta   / :beta-agents    - newest of {stable, beta}, so beta >= stable
       #                               always (a :beta consumer never runs code
       #                               older than :latest).
-      # Immutable X.Y.Z[-beta.N] tags are always created (below), regardless.
+      # Version X.Y.Z[-beta.N] tags are always created (below), regardless.
       #
       # Never move a pointer backwards (#2): a manual backfill of an old tag must
-      # only create its immutable tag. Downgrading :latest past the 0.70.0
+      # only create its version tag. Downgrading :latest past the 0.70.0
       # PostgreSQL cutover would make a deployment tracking it boot a pre-PG
       # image against stale SQLite data.
       #

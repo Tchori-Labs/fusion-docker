@@ -56,6 +56,28 @@ def test_fails_loudly_without_runner_stage(tmp_path):
     assert "postgresql-client" not in (tmp_path / "Dockerfile").read_text()
 
 
+def test_fails_loudly_on_single_line_apt_chain(tmp_path):
+    # No trailing continuation: the package list is followed by more shell
+    # commands, so appending to it would make postgresql-client an operand of
+    # whatever ran last (`rm -rf ...`) instead of a package to install.
+    single_line = MOCK.replace(
+        "RUN apt-get update \\\n"
+        "  && apt-get install -y --no-install-recommends git \\\n"
+        "  && rm -rf /var/lib/apt/lists/*\n"
+        "WORKDIR /app\n",
+        "RUN apt-get update && apt-get install -y --no-install-recommends git"
+        " && rm -rf /var/lib/apt/lists/*\n"
+        "WORKDIR /app\n",
+        1,
+    )
+    assert single_line != MOCK
+    (tmp_path / "Dockerfile").write_text(single_line)
+    r = run_in(tmp_path)
+    assert r.returncode != 0
+    assert "refusing to guess" in r.stderr
+    assert (tmp_path / "Dockerfile").read_text() == single_line
+
+
 def test_fails_loudly_without_runner_apt_line(tmp_path):
     (tmp_path / "Dockerfile").write_text(MOCK.replace(
         "  && apt-get install -y --no-install-recommends git \\\n", "", 1))
