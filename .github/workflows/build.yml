@@ -64,6 +64,7 @@ jobs:
           python3 ../patches/sync_workspace_copies.py
           python3 ../patches/skip_electron_download.py
           python3 ../patches/relocate_app.py
+          python3 ../patches/install_postgres_client.py
 
       - uses: docker/setup-buildx-action@v3
 
@@ -99,6 +100,10 @@ jobs:
             echo "health version '$V' != expected '$VERSION'"; docker logs smoke-clean; exit 1
           fi
           docker exec smoke-clean fn --version   # exit!=0 = broken CLI (dep skew)
+          # backup/restore shells out to these; the embedded PG ships server
+          # binaries only, so a missing client silently breaks `fn backup`.
+          docker exec smoke-clean pg_dump --version
+          docker exec smoke-clean pg_restore --version
           docker rm -f smoke-clean
 
       - name: Push clean by digest
@@ -134,6 +139,8 @@ jobs:
           docker exec smoke-agents claude --version
           docker exec smoke-agents codex --version
           docker exec smoke-agents which bwrap
+          docker exec smoke-agents pg_dump --version
+          docker exec smoke-agents pg_restore --version
           docker rm -f smoke-agents
 
       - name: Push agents by digest
