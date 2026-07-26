@@ -15,9 +15,12 @@ actually updateable under a persistent data volume.
 | `latest`, `latest-agents` | moving pointer to the newest **stable** build of that variant |
 | `beta`, `beta-agents` | moving pointer to the newest of {stable, beta} — never older than `latest` |
 
-**Pin production to an immutable `X.Y.Z[-beta.N]` tag** (with the `-agents`
-suffix if you need that variant). The moving tags exist to track a channel,
-not to run in production.
+**Pin production to a digest** — `ghcr.io/tchori-labs/fusion@sha256:...` is the
+only reference that cannot move. Version tags (`X.Y.Z[-beta.N]`, with the
+`-agents` suffix if you need that variant) are stable by convention rather than
+enforcement: re-dispatching a build for the same upstream ref re-pushes them at
+the new content. The moving tags exist to track a channel, not to run in
+production.
 
 Moving tags only advance after both variants pass smoke tests on both
 architectures, and never move backwards.
