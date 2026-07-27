@@ -1,0 +1,36 @@
+name: test
+
+on:
+  pull_request:
+    paths:
+      - "patches/**"
+      - "tests/**"
+      - ".github/workflows/test.yml"
+  # main only: an unscoped push trigger would re-run this on every PR branch
+  # push, duplicating the pull_request run on the same commit.
+  push:
+    branches:
+      - main
+    paths:
+      - "patches/**"
+      - "tests/**"
+      - ".github/workflows/test.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
