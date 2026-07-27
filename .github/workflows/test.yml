@@ -1,0 +1,44 @@
+name: test
+
+on:
+  pull_request:
+    paths:
+      - "patches/**"
+      - "tests/**"
+      - ".github/workflows/test.yml"
+  # main only: an unscoped push trigger would re-run this on every PR branch
+  # push, duplicating the pull_request run on the same commit.
+  push:
+    branches:
+      - main
+    paths:
+      - "patches/**"
+      - "tests/**"
+      - ".github/workflows/test.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # This job only reads the tree to run pytest; it never runs an
+          # authenticated git command, so leaving the token in git config
+          # would be handing out credentials nothing here uses.
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Bounded to the current major: a pytest major release can change
+      # collection or assertion behaviour and redden CI on a commit that
+      # touched none of it. Patches still flow.
+      - name: Install pytest
+        run: pip install 'pytest~=9.0'
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
