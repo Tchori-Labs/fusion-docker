@@ -63,6 +63,7 @@ jobs:
         run: |
           python3 ../patches/sync_workspace_copies.py
           python3 ../patches/skip_electron_download.py
+          python3 ../patches/full_cli_package.py
           python3 ../patches/relocate_app.py
           python3 ../patches/install_postgres_client.py
 
