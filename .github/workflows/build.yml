@@ -117,6 +117,46 @@ jobs:
 
       - name: Build agents image (local)
         run: docker build -f agents/Dockerfile --build-arg BASE_IMAGE=local/fusion:clean -t local/fusion:agents .
+      - name: Install Playwright Chromium smoke browsers
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/playwright-browsers
+        run: npx --yes playwright@1.61.1 install chromium
+
+      - name: Smoke test Playwright Chromium dependencies
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: ${{ runner.temp }}/playwright-browsers
+        run: |
+          set -euo pipefail
+          docker run --rm --user node --entrypoint /bin/sh \
+            -v "$PLAYWRIGHT_BROWSERS_PATH:/tmp/playwright-browsers:ro" \
+            local/fusion:agents \
+            -eu -c '
+              # Validate the full and headless binaries independently.
+              for binary in \
+                /tmp/playwright-browsers/chromium_headless_shell-1228/chrome-headless-shell-linux64/chrome-headless-shell \
+                /tmp/playwright-browsers/chromium-1228/chrome-linux64/chrome
+              do
+                test -x "$binary"
+                if ldd "$binary" | grep -q "not found"; then
+                  echo "missing dependency: $binary" >&2
+                  ldd "$binary" >&2
+                  exit 1
+                fi
+              done
+
+              timeout 20s \
+                /tmp/playwright-browsers/chromium_headless_shell-1228/chrome-headless-shell-linux64/chrome-headless-shell \
+                --headless --no-sandbox --disable-gpu \
+                --disable-dev-shm-usage --no-first-run \
+                --disable-background-networking --disable-component-update \
+                --disable-default-apps --disable-sync \
+                --virtual-time-budget=1000 \
+                --user-data-dir=/tmp/chromium-smoke \
+                --dump-dom 'data:text/html,<title>playwright-smoke</title>' \
+                > /tmp/playwright-smoke.html
+              grep -Fq '<title>playwright-smoke</title>' /tmp/playwright-smoke.html
+            '
+
 
       - name: Smoke test agents
         env:

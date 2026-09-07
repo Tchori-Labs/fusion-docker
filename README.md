@@ -35,6 +35,10 @@ architectures, and never move backwards.
   `-agents`). Fusion's backup/restore shells out to `pg_dump`/`pg_restore`,
   which the embedded PostgreSQL package doesn't ship — without them
   `fn backup` fails. The client major (15) matches the embedded server.
+- `-agents` includes the Debian 12 host libraries required by Playwright
+  1.61.1 Chromium revision 1228. Browser binaries remain in the persistent
+  `/project/.cache/ms-playwright` volume; they are not downloaded at image
+  build time.
 - Runs as user `node` (uid/gid 1000). The `fn`/`fusion` CLI is preinstalled;
   the dashboard's "install global CLI" self-installer cannot work in a
   container (non-root can't write `/usr/local`) and isn't needed.
