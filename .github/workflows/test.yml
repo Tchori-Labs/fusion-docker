@@ -5,7 +5,6 @@ on:
     paths:
       - "patches/**"
       - "tests/**"
-      - "agents/Dockerfile"
       - ".github/workflows/test.yml"
   # main only: an unscoped push trigger would re-run this on every PR branch
   # push, duplicating the pull_request run on the same commit.
@@ -15,7 +14,6 @@ on:
     paths:
       - "patches/**"
       - "tests/**"
-      - "agents/Dockerfile"
       - ".github/workflows/test.yml"
 
 permissions:
