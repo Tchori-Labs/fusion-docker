@@ -152,9 +152,9 @@ jobs:
                 --disable-default-apps --disable-sync \
                 --virtual-time-budget=1000 \
                 --user-data-dir=/tmp/chromium-smoke \
-                --dump-dom 'data:text/html,<title>playwright-smoke</title>' \
+                --dump-dom "data:text/html,<title>playwright-smoke</title>" \
                 > /tmp/playwright-smoke.html
-              grep -Fq '<title>playwright-smoke</title>' /tmp/playwright-smoke.html
+              grep -Fq "<title>playwright-smoke</title>" /tmp/playwright-smoke.html
             '
 
 
