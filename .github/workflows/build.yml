@@ -131,8 +131,15 @@ jobs:
             -v "$PLAYWRIGHT_BROWSERS_PATH:/tmp/playwright-browsers:ro" \
             local/fusion:agents \
             -eu -c '
-              # Extracted browser directory names encode the runner architecture.
-              set -- /tmp/playwright-browsers/chromium_headless_shell-*/chrome-headless-shell-*/chrome-headless-shell
+              # Playwright uses different executable names in amd64 and arm64
+              # archives; resolve exactly one executable without assuming either.
+              set --
+              for candidate in \
+                /tmp/playwright-browsers/chromium_headless_shell-*/*/chrome-headless-shell \
+                /tmp/playwright-browsers/chromium_headless_shell-*/*/headless_shell
+              do
+                test -x "$candidate" && set -- "$@" "$candidate"
+              done
               test "$#" -eq 1
               headless=$1
               set -- /tmp/playwright-browsers/chromium-*/chrome-*/chrome
