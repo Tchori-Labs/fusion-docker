@@ -131,10 +131,16 @@ jobs:
             -v "$PLAYWRIGHT_BROWSERS_PATH:/tmp/playwright-browsers:ro" \
             local/fusion:agents \
             -eu -c '
+              # Extracted browser directory names encode the runner architecture.
+              set -- /tmp/playwright-browsers/chromium_headless_shell-*/chrome-headless-shell-*/chrome-headless-shell
+              test "$#" -eq 1
+              headless=$1
+              set -- /tmp/playwright-browsers/chromium-*/chrome-*/chrome
+              test "$#" -eq 1
+              chromium=$1
+
               # Validate the full and headless binaries independently.
-              for binary in \
-                /tmp/playwright-browsers/chromium_headless_shell-1228/chrome-headless-shell-linux64/chrome-headless-shell \
-                /tmp/playwright-browsers/chromium-1228/chrome-linux64/chrome
+              for binary in "$headless" "$chromium"
               do
                 test -x "$binary"
                 if ldd "$binary" | grep -q "not found"; then
@@ -144,8 +150,7 @@ jobs:
                 fi
               done
 
-              timeout 20s \
-                /tmp/playwright-browsers/chromium_headless_shell-1228/chrome-headless-shell-linux64/chrome-headless-shell \
+              timeout 20s "$headless" \
                 --headless --no-sandbox --disable-gpu \
                 --disable-dev-shm-usage --no-first-run \
                 --disable-background-networking --disable-component-update \
