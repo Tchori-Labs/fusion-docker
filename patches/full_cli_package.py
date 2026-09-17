@@ -51,7 +51,10 @@ Idempotent.
 """
 import sys
 
-ANCHOR = "RUN pnpm build\n"
+BUILD_ANCHORS = (
+    "RUN pnpm build\n",
+    "RUN NODE_OPTIONS=--max-old-space-size=6144 pnpm build\n",
+)
 
 CLI_DIST_COPY = "COPY --from=builder /app/packages/cli/dist ./packages/cli/dist\n"
 CLI_DIST_COPY_OWNED = (
@@ -81,9 +84,12 @@ if "FUSION_CLI_FULL_PACKAGE" in src:
     print("full_cli_package: already present, no-op")
     sys.exit(0)
 
-if src.count(ANCHOR) != 1:
-    sys.exit(f"full_cli_package: expected exactly one {ANCHOR.strip()!r} line, found "
-             f"{src.count(ANCHOR)} - upstream Dockerfile changed shape, refusing to guess")
+build_count = sum(src.count(anchor) for anchor in BUILD_ANCHORS)
+if build_count != 1:
+    sys.exit(f"full_cli_package: expected exactly one supported pnpm build line, "
+             f"found {build_count} - upstream Dockerfile changed shape, refusing to guess")
+
+ANCHOR = next(anchor for anchor in BUILD_ANCHORS if src.count(anchor) == 1)
 
 idx = src.index(ANCHOR)
 

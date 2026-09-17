@@ -13,7 +13,7 @@ HOME=/project, and bake the fn/fusion CLI (USER node can't write /usr/local at
 runtime, and runfusion.ai's loose ^ deps must be resolved as of the release
 publish moment via --before, or newer transitive releases break the CLI).
 
-Two upstream shapes are handled:
+Three upstream shapes are handled:
 
 - Upstream >= 0.73.0 (issue #2414) already installs the app at /app, uses an
   absolute ENTRYPOINT, and relocated the runtime cwd to a fresh /workspace mount
@@ -21,6 +21,11 @@ Two upstream shapes are handled:
   /project node-owned alongside upstream's /workspace prep, set HOME, and bake
   the CLI. This keeps our /project data-volume convention (and its embedded-PG
   state) unchanged across the upgrade.
+
+- Upstream v0.77.0 keeps the same /app + /workspace layout, but its absolute
+  ENTRYPOINT is the official docker-entrypoint.sh restart supervisor. The
+  wrapper and its COPY must stay intact; it already invokes the CLI through the
+  absolute /app path.
 
 - Upstream <= 0.72.0 installs the app AT /project (runtime WORKDIR /project,
   relative ENTRYPOINT). We do the full relocation to /app ourselves. Kept so a
@@ -44,6 +49,12 @@ CWD_NOTE = (
     "# cwd-relative state (.fusion/tasks, .fusion/agents, embedded-PG migration\n"
     "# key) at the launch dir, so it must live on the persistent mount.\n"
 )
+DIRECT_ENTRYPOINT = 'ENTRYPOINT ["node", "/app/packages/cli/dist/bin.js"]'
+SUPERVISOR_COPY = (
+    "COPY --chmod=0755 scripts/docker-entrypoint.sh "
+    "/usr/local/bin/docker-entrypoint.sh"
+)
+SUPERVISOR_ENTRYPOINT = 'ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]'
 
 src = open("Dockerfile").read()
 try:
@@ -51,11 +62,22 @@ try:
     head, tail = src[:i], src[i:]
 
     if "WORKDIR /workspace" in tail:
-        # Upstream >= 0.73.0: app already at /app, ENTRYPOINT already absolute,
-        # runtime cwd = /workspace. Repoint cwd to /project, create /project
-        # node-owned, set HOME, bake the CLI (root, before USER node).
-        assert 'ENTRYPOINT ["node", "/app/packages/cli/dist/bin.js"]' in tail, \
-            "expected absolute /app ENTRYPOINT in the >=0.73.0 shape"
+        # Upstream >= 0.73.0: app already at /app, runtime cwd = /workspace.
+        # The v0.77.0 shape uses the official restart supervisor wrapper;
+        # preserve both its COPY and ENTRYPOINT so restart semantics remain
+        # available. Older releases invoke the absolute node entrypoint
+        # directly. In either case, create /project node-owned, set HOME, and
+        # bake the CLI (root, before USER node).
+        has_direct_entrypoint = DIRECT_ENTRYPOINT in tail
+        has_supervisor_entrypoint = SUPERVISOR_ENTRYPOINT in tail
+        assert has_direct_entrypoint != has_supervisor_entrypoint, \
+            "expected exactly one absolute runtime ENTRYPOINT shape"
+        if has_supervisor_entrypoint:
+            assert SUPERVISOR_COPY in tail, \
+                "official docker-entrypoint.sh COPY not found"
+        else:
+            assert SUPERVISOR_COPY not in tail, \
+                "docker-entrypoint.sh COPY found without its supervisor ENTRYPOINT"
         assert "mkdir -p /workspace" in tail, "runtime /workspace mkdir not found"
         tail = tail.replace(
             "mkdir -p /workspace", "mkdir -p /workspace /project", 1
@@ -94,7 +116,7 @@ try:
         entrypoint = 'ENTRYPOINT ["node", "packages/cli/dist/bin.js"]'
         assert entrypoint in tail, "relative ENTRYPOINT not found"
         tail = tail.replace(
-            entrypoint, 'ENTRYPOINT ["node", "/app/packages/cli/dist/bin.js"]', 1
+            entrypoint, DIRECT_ENTRYPOINT, 1
         )
 
         assert "WORKDIR /app\n" in tail, "runtime WORKDIR /app not found after rename"

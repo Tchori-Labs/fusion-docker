@@ -30,8 +30,34 @@ WORKDIR /workspace
 ENTRYPOINT ["node", "/app/packages/cli/dist/bin.js"]
 """
 
+# Upstream v0.77.0: app at /app, the official entrypoint wrapper is the
+# restart supervisor, and the runtime cwd is still /workspace.
+MOCK_SUPERVISOR = """FROM node AS builder
+WORKDIR /app
+RUN pnpm build
+FROM node AS runner
+WORKDIR /app
+COPY --from=builder /app/node_modules/.pnpm/typebox@*/node_modules/typebox /app/node_modules/typebox
+RUN chown node:node /app \\
+  && mkdir -p /workspace /home/node/.fusion \\
+  && chown node:node /workspace /home/node/.fusion
+COPY --chmod=0755 scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+USER node
+RUN git config --global user.name "Fusion" \\
+  && git config --global user.email "fusion@localhost"
+WORKDIR /workspace
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["dashboard", "--host", "0.0.0.0"]
+"""
+
 ENV = dict(os.environ, FUSION_VERSION="0.60.0",
            NPM_BEFORE="2026-07-13T17:32:37.000Z")
+
+SUPERVISOR_COPY = (
+    "COPY --chmod=0755 scripts/docker-entrypoint.sh "
+    "/usr/local/bin/docker-entrypoint.sh"
+)
+SUPERVISOR_ENTRYPOINT = 'ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]'
 
 
 def run_in(tmp_path, env=ENV):
@@ -39,8 +65,8 @@ def run_in(tmp_path, env=ENV):
                           env=env, capture_output=True, text=True)
 
 
-def assert_container_friendly(out, mock):
-    """End-state invariants both upstream shapes must converge to."""
+def assert_container_friendly(out, mock, supervisor=False):
+    """End-state invariants all upstream shapes must converge to."""
     runner = out[out.index("AS runner"):]
     # build/install steps run at /app; the final image cwd is the /project data
     # dir (upstream roots cwd-relative state at the launch directory).
@@ -49,8 +75,10 @@ def assert_container_friendly(out, mock):
     assert runner.index("USER node") < runner.index("WORKDIR /project")
     # /project must exist node-owned so a fresh named volume seeds node perms.
     assert "chown node:node" in runner and "/project" in runner
-    assert "chown node:node /workspace /project" in runner \
+    assert (
+        "chown node:node /workspace /project" in runner
         or "chown node:node /app /project" in runner
+    )
     # HOME on the data volume, and the CLI baked as root (before USER node).
     assert "ENV HOME=/project" in runner
     assert runner.index("ENV HOME=/project") < runner.index("USER node")
@@ -59,7 +87,14 @@ def assert_container_friendly(out, mock):
     assert runner.index(cli) < runner.index("USER node")  # root-privileged
     # app referenced by absolute path everywhere it matters.
     assert "/app/node_modules/typebox" in runner
-    assert 'ENTRYPOINT ["node", "/app/packages/cli/dist/bin.js"]' in runner
+    if supervisor:
+        # v0.77.0's wrapper owns PID 1 and invokes the absolute /app CLI.
+        assert SUPERVISOR_COPY in runner
+        assert SUPERVISOR_ENTRYPOINT in runner
+        assert 'ENTRYPOINT ["node", "/app/packages/cli/dist/bin.js"]' not in runner
+    else:
+        assert 'ENTRYPOINT ["node", "/app/packages/cli/dist/bin.js"]' in runner
+        assert SUPERVISOR_ENTRYPOINT not in runner
     assert "claude-code" not in out  # toolchain belongs to the agents variant
     # builder stage untouched.
     assert out[:out.index("AS runner")] == mock[:mock.index("AS runner")]
@@ -82,6 +117,21 @@ def test_repoints_new_shape(tmp_path):
     assert "mkdir -p /workspace /project" in out
 
 
+def test_repoints_supervised_shape(tmp_path):
+    (tmp_path / "Dockerfile").write_text(MOCK_SUPERVISOR)
+    r = run_in(tmp_path)
+    assert r.returncode == 0, r.stderr
+    out = (tmp_path / "Dockerfile").read_text()
+    assert_container_friendly(out, MOCK_SUPERVISOR, supervisor=True)
+    # The wrapper and its PID-1 supervisor contract survive relocation.
+    assert SUPERVISOR_COPY in out
+    assert SUPERVISOR_ENTRYPOINT in out
+    assert "RUN git config --global user.name" in out
+    # Both persistent paths remain seeded and node-owned.
+    assert "mkdir -p /workspace /project /home/node/.fusion" in out
+    assert "chown node:node /workspace /project /home/node/.fusion" in out
+
+
 def test_fails_loudly_on_changed_shape(tmp_path):
     (tmp_path / "Dockerfile").write_text("FROM node AS runner\nUSER node\n")
     r = run_in(tmp_path)
@@ -102,3 +152,12 @@ def test_fails_loudly_new_shape_without_absolute_entrypoint(tmp_path):
     r = run_in(tmp_path)
     assert r.returncode != 0
     assert "ENTRYPOINT" in r.stderr
+
+
+def test_fails_loudly_supervisor_without_script_copy(tmp_path):
+    (tmp_path / "Dockerfile").write_text(
+        MOCK_SUPERVISOR.replace(SUPERVISOR_COPY + "\n", "")
+    )
+    r = run_in(tmp_path)
+    assert r.returncode != 0
+    assert "docker-entrypoint.sh COPY" in r.stderr

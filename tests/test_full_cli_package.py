@@ -17,6 +17,22 @@ RUN pnpm install --frozen-lockfile --prod --filter @runfusion/fusion
 COPY --from=builder /app/packages/cli/dist ./packages/cli/dist
 USER node
 """
+V077_MOCK = MOCK.replace(
+    "RUN pnpm build\n",
+    "RUN NODE_OPTIONS=--max-old-space-size=6144 pnpm build\n",
+)
+
+
+def test_enables_full_package_before_v077_build_without_clobbering_node_options(tmp_path):
+    (tmp_path / "Dockerfile").write_text(V077_MOCK)
+    r = run_in(tmp_path)
+    assert r.returncode == 0, r.stderr
+    out = (tmp_path / "Dockerfile").read_text()
+
+    build = "RUN NODE_OPTIONS=--max-old-space-size=6144 pnpm build"
+    assert out.count(build) == 1
+    assert out.index("ENV FUSION_CLI_FULL_PACKAGE") < out.index(build)
+    assert out.index("mkdir -p packages/desktop/dist") < out.index(build)
 
 
 def run_in(tmp_path):
@@ -83,6 +99,19 @@ def test_fails_loudly_without_cli_dist_copy(tmp_path):
     r = run_in(tmp_path)
     assert r.returncode != 0
     assert "refusing to guess" in r.stderr
+
+
+def test_fails_closed_on_unsupported_node_options_build_shape(tmp_path):
+    dockerfile = MOCK.replace(
+        "RUN pnpm build\n",
+        "RUN NODE_OPTIONS=--max-old-space-size=4096 pnpm build\n",
+    )
+    (tmp_path / "Dockerfile").write_text(dockerfile)
+    r = run_in(tmp_path)
+
+    assert r.returncode != 0
+    assert "refusing to guess" in r.stderr
+    assert (tmp_path / "Dockerfile").read_text() == dockerfile
 
 
 def test_idempotent(tmp_path):
